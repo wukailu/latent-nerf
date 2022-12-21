@@ -2,7 +2,7 @@ import pyrallis
 
 from src.latent_paint.configs.train_config import TrainConfig
 from src.latent_paint.training.trainer import Trainer
-from loguru import logger
+
 
 
 @pyrallis.wrap()

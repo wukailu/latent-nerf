@@ -54,6 +54,7 @@ class Trainer:
         logger.info(f'Successfully initialized {self.cfg.log.exp_name}')
 
     def init_mesh_model(self) -> nn.Module:
+        # TODO: add PBS mesh model.
         if self.cfg.render.backbone == 'texture-mesh':
             from src.latent_paint.models.textured_mesh import TexturedMeshModel
             model = TexturedMeshModel(self.cfg, device=self.device, render_grid_size=self.cfg.render.train_grid_size,
@@ -203,6 +204,7 @@ class Trainer:
             text_z = self.text_z
 
         # Guidance loss
+        # manually backward in diffusion.train_step, since we omitted an item in grad and cannot simply autodiff.
         loss_guidance = self.diffusion.train_step(text_z, pred_rgb)
         loss = loss_guidance
 

@@ -15,7 +15,6 @@ from tqdm import tqdm
 from src import utils
 from src.latent_nerf.configs.train_config import TrainConfig
 from src.latent_nerf.models.renderer import NeRFRenderer
-from src.latent_nerf.training.nerf_dataset import NeRFDataset
 from src.stable_diffusion import StableDiffusion
 from src.utils import make_path, tensor2numpy
 
@@ -90,13 +89,21 @@ class Trainer:
         return optimizer, scaler
 
     def init_dataloaders(self) -> Dict[str, DataLoader]:
-        train_dataloader = NeRFDataset(self.cfg.render, device=self.device, type='train', H=self.cfg.render.train_h,
+        if self.cfg.render.camera_type == 'round':
+            from src.latent_nerf.training.nerf_dataset import NeRFDataset as NDataset
+        elif self.cfg.render.camera_type == 'front':
+            from src.latent_nerf.training.nerf_dataset import FrontViewNeRFDataset as NDataset
+        elif self.cfg.render.camera_type == 'fixed':
+            from src.latent_nerf.training.nerf_dataset import FixedViewDataset as NDataset
+        else:
+            raise NotImplementedError()
+        train_dataloader = NDataset(self.cfg.render, device=self.device, type='train', H=self.cfg.render.train_h,
                                        W=self.cfg.render.train_w, size=100).dataloader()
-        val_loader = NeRFDataset(self.cfg.render, device=self.device, type='val', H=self.cfg.render.eval_h,
+        val_loader = NDataset(self.cfg.render, device=self.device, type='val', H=self.cfg.render.eval_h,
                                  W=self.cfg.render.eval_w,
                                  size=self.cfg.log.eval_size).dataloader()
         # Will be used for creating the final video
-        val_large_loader = NeRFDataset(self.cfg.render, device=self.device, type='val', H=self.cfg.render.eval_h,
+        val_large_loader = NDataset(self.cfg.render, device=self.device, type='val', H=self.cfg.render.eval_h,
                                        W=self.cfg.render.eval_w,
                                        size=self.cfg.log.full_eval_size).dataloader()
         dataloaders = {'train': train_dataloader, 'val': val_loader, 'val_large': val_large_loader}

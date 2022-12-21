@@ -51,5 +51,6 @@ class RenderConfig:
     backbone: str = 'grid'
     # Define the nerf output type
     nerf_type: NeRFType = NeRFType['latent']
-
+    # Define the camera pose distribution, in 'round', 'front', 'fixed'
+    camera_type: str = 'round'
 

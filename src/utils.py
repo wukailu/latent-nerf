@@ -18,6 +18,7 @@ def get_view_direction(thetas, phis, overhead, front):
     # first determine by phis
 
     # res[(phis < front)] = 0
+    # 这里其实写错了，但是由于初始化就是0，其他部分写对了这里错了不执行也没关系，最终结果是对的
     res[(phis >= (2 * np.pi - front / 2)) & (phis < front / 2)] = 0
 
     # res[(phis >= front) & (phis < np.pi)] = 1
@@ -51,3 +52,14 @@ def seed_everything(seed):
     torch.cuda.manual_seed(seed)
     #torch.backends.cudnn.deterministic = True
     #torch.backends.cudnn.benchmark = True
+
+def find_best_gpus(num_gpu_needs=1):
+    import subprocess as sp
+    gpu_ids = []
+    command = "nvidia-smi --query-gpu=memory.free --format=csv"
+    memory_free_info = sp.check_output(command.split()).decode('ascii').split('\n')[:-1][1:]
+    memory_free_values = [(int(x.split()[0]), i) for i, x in enumerate(memory_free_info) if i not in gpu_ids]
+    print('memories left ', memory_free_values)
+    memory_free_values = sorted(memory_free_values)[::-1]
+    gpu_ids = [k for m, k in memory_free_values[:num_gpu_needs]]
+    return gpu_ids

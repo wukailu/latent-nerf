@@ -189,3 +189,64 @@ class NeRFDataset:
                             num_workers=0)
         loader._data = self  # an ugly fix... we need to access dataset in trainer.
         return loader
+
+class FrontViewNeRFDataset(NeRFDataset):
+    """
+    A NeRFDataset that only generate the front view camera pose.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.radius_range = (3.0, 4.0)
+        self.fovy_range = (20, 35)
+        self.view_range = 15
+        self.theta_test = 80
+
+    def collate(self, index):
+        B = len(index)  # always 1
+        fixed_viewpoint = False
+        if self.training:
+            # random pose on the fly
+            poses, dirs = rand_poses(B, self.device, radius_range=self.radius_range,
+                                     theta_range=(90-self.view_range, 90+self.view_range),
+                                     phi_range=(360-self.view_range, 360+self.view_range),
+                                     angle_overhead=self.cfg.angle_overhead, angle_front=self.cfg.angle_front,
+                                     jitter=self.cfg.jitter_pose)
+
+            # random focal
+            fov = random.random() * (self.fovy_range[1] - self.fovy_range[0]) + self.fovy_range[0]
+            focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
+            intrinsics = np.array([focal, focal, self.cx, self.cy])
+        else:
+            # circle pose
+            phi = (index[0] / self.size) * self.view_range * 2 - self.view_range
+            theta = self.theta_test
+            poses, dirs = circle_poses(self.device, radius=self.radius_range[1] * 1.2, theta=theta, phi=phi,
+                                       angle_overhead=self.cfg.angle_overhead,
+                                       angle_front=self.cfg.angle_front)
+
+            # fixed focal
+            fov = (self.fovy_range[1] + self.fovy_range[0]) / 2
+            focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
+            intrinsics = np.array([focal, focal, self.cx, self.cy])
+
+        # sample a low-resolution but full image for CLIP
+        rays = get_rays(poses, intrinsics, self.H, self.W, -1)
+
+        data = {
+            'H': self.H,
+            'W': self.W,
+            'rays_o': rays['rays_o'],
+            'rays_d': rays['rays_d'],
+            'dir': dirs,
+            'fixed_viewpoint': fixed_viewpoint,
+        }
+
+        return data
+
+class FixedViewDataset(FrontViewNeRFDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.radius_range = (4.0, 4.0)
+        self.fovy_range = (30, 30)
+        self.view_range = 0
+        self.theta_test = 90

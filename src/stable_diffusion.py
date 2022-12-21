@@ -1,7 +1,6 @@
-from huggingface_hub import hf_hub_download
-from torchvision import transforms
-from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModel,logging,CLIPProcessor
 from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler
+from huggingface_hub import hf_hub_download
+from transformers import CLIPTextModel, CLIPTokenizer, logging
 
 # suppress partial model loading warning
 logging.set_verbosity_error()
@@ -11,7 +10,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
 
-import time
+def from_pretrained(model_type, model_name:str, *args, **kwargs):
+    cache_path = "model_cache/" + (str(model_type).split(".")[-1] + "-") + model_name + ".pt"
+    try:
+        model = model_type.from_pretrained(cache_path, *args, **kwargs)
+    except Exception as e:
+        # print("Error: ", e)
+        logger.info("Loading ", str(model_type), " online.")
+        model = model_type.from_pretrained(model_name, *args, **kwargs)
+        model.save_pretrained(cache_path)
+    return model
 
 class StableDiffusion(nn.Module):
     def __init__(self, device, model_name='CompVis/stable-diffusion-v1-4',concept_name=None, latent_mode=True):
@@ -34,17 +42,17 @@ class StableDiffusion(nn.Module):
         logger.info(f'loading stable diffusion with {model_name}...')
                 
         # 1. Load the autoencoder model which will be used to decode the latents into image space. 
-        self.vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", use_auth_token=self.token).to(self.device)
+        self.vae = from_pretrained(AutoencoderKL, model_name, subfolder="vae", use_auth_token=self.token).to(self.device)
 
         # 2. Load the tokenizer and text encoder to tokenize and encode the text. 
-        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        self.text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+        self.tokenizer = from_pretrained(CLIPTokenizer, "openai/clip-vit-large-patch14")
+        self.text_encoder = from_pretrained(CLIPTextModel, "openai/clip-vit-large-patch14").to(self.device)
         self.image_encoder = None
         self.image_processor = None
 
 
         # 3. The UNet model for generating the latents.
-        self.unet = UNet2DConditionModel.from_pretrained(model_name, subfolder="unet", use_auth_token=self.token).to(self.device)
+        self.unet = from_pretrained(UNet2DConditionModel, model_name, subfolder="unet", use_auth_token=self.token).to(self.device)
 
         # 4. Create a scheduler for inference
         self.scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=self.num_train_timesteps)
@@ -210,7 +218,6 @@ class StableDiffusion(nn.Module):
 
         # Text embeds -> img latents
         latents = self.produce_latents(text_embeds, height=height, width=width, latents=latents, num_inference_steps=num_inference_steps, guidance_scale=guidance_scale) # [1, 4, 64, 64]
-        
         # Img latents -> imgs
         imgs = self.decode_latents(latents) # [1, 3, 512, 512]
 
@@ -222,27 +229,30 @@ class StableDiffusion(nn.Module):
 
 
 if __name__ == '__main__':
-
     import argparse
-    import matplotlib.pyplot as plt
 
     parser = argparse.ArgumentParser()
     parser.add_argument('prompt', type=str)
     parser.add_argument('-H', type=int, default=512)
     parser.add_argument('-W', type=int, default=512)
     parser.add_argument('--steps', type=int, default=50)
+    parser.add_argument('--seed', type=int, default=0)
     opt = parser.parse_args()
+
+    from src.utils import seed_everything
+    seed_everything(opt.seed)
 
     device = torch.device('cuda')
 
     sd = StableDiffusion(device)
 
+    print("running diffusion with prompt:", opt.prompt)
+
     imgs = sd.prompt_to_img(opt.prompt, opt.H, opt.W, opt.steps)
 
-    # visualize image
-    plt.imshow(imgs[0])
-    plt.show()
-
+    from PIL import Image
+    im = Image.fromarray(imgs[0])
+    im.save("experiments/sample_img.jpeg")
 
 
 
