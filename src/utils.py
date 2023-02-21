@@ -35,14 +35,16 @@ def get_view_direction(thetas, phis, overhead, front):
     return res
 
 
-def tensor2numpy(tensor:torch.Tensor) -> np.ndarray:
+def tensor2numpy(tensor: torch.Tensor) -> np.ndarray:
     tensor = tensor.detach().cpu().numpy()
     tensor = (tensor * 255).astype(np.uint8)
     return tensor
 
+
 def make_path(path: Path) -> Path:
-    path.mkdir(exist_ok=True,parents=True)
+    path.mkdir(exist_ok=True, parents=True)
     return path
+
 
 def seed_everything(seed):
     random.seed(seed)
@@ -50,8 +52,9 @@ def seed_everything(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    #torch.backends.cudnn.deterministic = True
-    #torch.backends.cudnn.benchmark = True
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = True
+
 
 def find_best_gpus(num_gpu_needs=1):
     import subprocess as sp
@@ -64,6 +67,7 @@ def find_best_gpus(num_gpu_needs=1):
     gpu_ids = [k for m, k in memory_free_values[:num_gpu_needs]]
     return gpu_ids
 
+
 def load_dpt(model_check_point="src/DPT/weights/dpt_hybrid-midas-501f0c75.pt"):
     from dpt.models import DPTDepthModel
     model = DPTDepthModel(
@@ -72,13 +76,13 @@ def load_dpt(model_check_point="src/DPT/weights/dpt_hybrid-midas-501f0c75.pt"):
         non_negative=True,
         enable_attention_hooks=False,
     )
-    return model.eval()
+    return model.eval().cpu()
+
 
 def infer_depth(model, img):
-    from torchvision.transforms import Compose, Resize
-    import cv2
+    from torchvision.transforms import Compose, Resize, Normalize
     """
-    @param img: Numpy array, (151, 151, 3), [0, 1.0]
+    @param img: Numpy array, (1, 151, 151, 3), [0, 1.0]
     @param model: dpt_hybird model from load_dpt
     """
     device = img.device
@@ -86,35 +90,47 @@ def infer_depth(model, img):
         model = model.to(memory_format=torch.channels_last)
         model = model.half()
     model.to(device)
-    # TODO:
+
     net_w = net_h = 384
     transform = Compose(
         [
             Resize([net_h, net_w]),
-            NormalizeImage(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            PrepareForNet(), # (h,w,c) -> (c,h,w)
+            Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ]
     )
 
-    img_input = transform({"image": img})["image"]
+    img_input = transform(img)
 
     # compute
     with torch.no_grad():
-        sample = torch.from_numpy(img_input).to(device).unsqueeze(0)
+        sample = img_input.to(device)
 
         if device == torch.device("cuda"):
             sample = sample.to(memory_format=torch.channels_last)
             sample = sample.half()
 
-        prediction = model.forward(sample)
+        prediction = model.forward(sample)  # [N, H, W]
         prediction = torch.nn.functional.interpolate(
-                prediction.unsqueeze(1),
-                size=img.shape[:2],
-                mode="bicubic",
-                align_corners=False,
-            )
-    return prediction
+            prediction.unsqueeze(1),
+            size=img.shape[-2:],
+            mode="bicubic",
+            align_corners=False,
+        )  # [N, 1, H, W]
+    return prediction[:, 0]  # [N, H, W]
 
+
+# unit test passed
 if __name__ == "__main__":
     import glob
+    from PIL import Image
+    import numpy as np
+
     img_names = glob.glob(os.path.join("src/DPT/input", "*"))
+    model = load_dpt()
+    for idx, name in enumerate(img_names):
+        img = torch.tensor(np.array(Image.open(name))).permute((2, 0, 1))[None, :3] / 255.
+        print(img.shape)
+        pred = infer_depth(model, img.cuda())
+        print(pred.shape)
+        from DPT.util.io import write_depth
+        write_depth(f"tmp{idx}", pred.cpu().squeeze().numpy(), bits=2, absolute_depth=False)
