@@ -213,7 +213,7 @@ class PrepareForNet(object):
         pass
 
     def __call__(self, sample):
-        image = np.transpose(sample["image"], (2, 0, 1))
+        image = np.transpose(sample["image"], (2, 0, 1))  # (h,w,c) -> (c, h, w)
         sample["image"] = np.ascontiguousarray(image).astype(np.float32)
 
         if "mask" in sample:

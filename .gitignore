@@ -8,4 +8,4 @@
 data/*
 logs/*
 .idea
-DPT/weights/dpt_hybrid-midas-501f0c75.pt
+src/DPT/weights/dpt_hybrid-midas-501f0c75.pt

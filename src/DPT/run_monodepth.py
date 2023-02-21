@@ -6,14 +6,12 @@ import torch
 import cv2
 import argparse
 
-import util.io
-
 from torchvision.transforms import Compose
 
 from dpt.models import DPTDepthModel
 from dpt.midas_net import MidasNet_large
 from dpt.transforms import Resize, NormalizeImage, PrepareForNet
-
+import util.io as io
 
 def run(input_path, output_path, model_path, model_type="dpt_hybrid", optimize=True):
     """Run MonoDepthNN to compute depth maps.
@@ -129,7 +127,7 @@ def run(input_path, output_path, model_path, model_type="dpt_hybrid", optimize=T
         print("  processing {} ({}/{})".format(img_name, ind + 1, num_images))
         # input
 
-        img = util.io.read_image(img_name)
+        img = io.read_image(img_name)
 
         if args.kitti_crop is True:
             height, width, _ = img.shape
@@ -169,7 +167,7 @@ def run(input_path, output_path, model_path, model_type="dpt_hybrid", optimize=T
         filename = os.path.join(
             output_path, os.path.splitext(os.path.basename(img_name))[0]
         )
-        util.io.write_depth(filename, prediction, bits=2, absolute_depth=args.absolute_depth)
+        io.write_depth(filename, prediction, bits=2, absolute_depth=args.absolute_depth)
 
     print("finished")
 

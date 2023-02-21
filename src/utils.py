@@ -63,3 +63,58 @@ def find_best_gpus(num_gpu_needs=1):
     memory_free_values = sorted(memory_free_values)[::-1]
     gpu_ids = [k for m, k in memory_free_values[:num_gpu_needs]]
     return gpu_ids
+
+def load_dpt(model_check_point="src/DPT/weights/dpt_hybrid-midas-501f0c75.pt"):
+    from dpt.models import DPTDepthModel
+    model = DPTDepthModel(
+        path=model_check_point,
+        backbone="vitb_rn50_384",
+        non_negative=True,
+        enable_attention_hooks=False,
+    )
+    return model.eval()
+
+def infer_depth(model, img):
+    from torchvision.transforms import Compose, Resize
+    import cv2
+    """
+    @param img: Numpy array, (151, 151, 3), [0, 1.0]
+    @param model: dpt_hybird model from load_dpt
+    """
+    device = img.device
+    if device == torch.device("cuda"):
+        model = model.to(memory_format=torch.channels_last)
+        model = model.half()
+    model.to(device)
+    # TODO:
+    net_w = net_h = 384
+    transform = Compose(
+        [
+            Resize([net_h, net_w]),
+            NormalizeImage(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            PrepareForNet(), # (h,w,c) -> (c,h,w)
+        ]
+    )
+
+    img_input = transform({"image": img})["image"]
+
+    # compute
+    with torch.no_grad():
+        sample = torch.from_numpy(img_input).to(device).unsqueeze(0)
+
+        if device == torch.device("cuda"):
+            sample = sample.to(memory_format=torch.channels_last)
+            sample = sample.half()
+
+        prediction = model.forward(sample)
+        prediction = torch.nn.functional.interpolate(
+                prediction.unsqueeze(1),
+                size=img.shape[:2],
+                mode="bicubic",
+                align_corners=False,
+            )
+    return prediction
+
+if __name__ == "__main__":
+    import glob
+    img_names = glob.glob(os.path.join("src/DPT/input", "*"))
