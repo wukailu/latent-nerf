@@ -40,7 +40,7 @@ class GuideConfig:
     # texture image resolution
     texture_resolution=128
     # texture mapping interpolation mode from texture image, options: 'nearest', 'bilinear', 'bicubic'
-    texture_interpolation_mode: str= 'nearest'
+    texture_interpolation_mode: str= 'bilinear'
 
 
 @dataclass
@@ -66,7 +66,7 @@ class LogConfig:
     # Experiment output dir
     exp_root: Path = Path('experiments/')
     # How many steps between save step
-    save_interval: int = 100
+    save_interval: int = 1000
     # Run only test
     eval_only: bool = False
     # Number of angles to sample for eval during training
