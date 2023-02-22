@@ -227,6 +227,7 @@ class Trainer:
                                    ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True)
         pred_rgb = outputs['image'].reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         pred_ws = outputs['weights_sum'].reshape(B, 1, H, W)
+        pred_depth = outputs['depth'].reshape(B, H, W)
 
         # text embeddings
         if self.cfg.guide.append_direction:
@@ -247,6 +248,8 @@ class Trainer:
         if 'shape_loss' in self.losses:
             loss += self.cfg.optim.lambda_shape * self.losses['shape_loss'](outputs['xyzs'], outputs['sigmas'])
 
+        # TODO: add depth loss here, using outputs['depth']
+        
         return pred_rgb, pred_ws, loss
 
     def eval_render(self, data, bg_color=None, perturb=False):
