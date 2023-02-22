@@ -79,7 +79,7 @@ def load_dpt(model_check_point="src/DPT/weights/dpt_hybrid-midas-501f0c75.pt"):
     return model.eval().cpu()
 
 
-def infer_depth(model, img):
+def infer_depth(model, img, shape_384=False):
     from torchvision.transforms import Compose, Resize, Normalize
     """
     @param img: Numpy array, (1, 151, 151, 3), [0, 1.0]
@@ -110,13 +110,14 @@ def infer_depth(model, img):
             sample = sample.half()
 
         prediction = model.forward(sample)  # [N, H, W]
-        prediction = torch.nn.functional.interpolate(
-            prediction.unsqueeze(1),
-            size=img.shape[-2:],
-            mode="bicubic",
-            align_corners=False,
-        )  # [N, 1, H, W]
-    return prediction[:, 0]  # [N, H, W]
+        if not shape_384:
+            prediction = torch.nn.functional.interpolate(
+                prediction.unsqueeze(1),
+                size=img.shape[-2:],
+                mode="bicubic",
+                align_corners=False,
+            )[:, 0]  # [N, 1, H, W]
+    return prediction  # [N, H, W]
 
 
 # unit test passed

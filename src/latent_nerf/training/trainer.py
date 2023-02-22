@@ -10,6 +10,7 @@ from PIL import Image
 from loguru import logger
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from src import utils
@@ -117,6 +118,9 @@ class Trainer:
         if self.cfg.optim.lambda_sparsity > 0:
             from src.latent_nerf.training.losses.sparsity_loss import sparsity_loss
             losses['sparsity_loss'] = sparsity_loss
+        if self.cfg.optim.lambda_depth > 0:
+            from src.latent_nerf.training.losses.depth_loss import DepthLoss
+            losses['depth_loss'] = DepthLoss(self.cfg.guide)
         return losses
 
     def init_logger(self):
@@ -236,6 +240,13 @@ class Trainer:
         else:
             text_z = self.text_z
 
+
+        if self.nerf.latent_mode:
+            render_rgb = self.diffusion.decode_latents(pred_rgb)
+        else:
+            render_rgb = pred_rgb
+        assert render_rgb.size(1) == 3, f"shape is {render_rgb.shape}"
+
         # Guidance loss
         loss_guidance = self.diffusion.train_step(text_z, pred_rgb)
         loss = loss_guidance
@@ -248,7 +259,9 @@ class Trainer:
         if 'shape_loss' in self.losses:
             loss += self.cfg.optim.lambda_shape * self.losses['shape_loss'](outputs['xyzs'], outputs['sigmas'])
 
-        # TODO: add depth loss here, using outputs['depth']
+        # Depth loss
+        if 'depth_loss' in self.losses:
+            loss += self.cfg.optim.lambda_depth * self.losses['depth_loss'](render_rgb, pred_depth)
         
         return pred_rgb, pred_ws, loss
 

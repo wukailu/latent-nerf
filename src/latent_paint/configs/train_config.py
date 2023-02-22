@@ -40,7 +40,7 @@ class GuideConfig:
     # texture image resolution
     texture_resolution=128
     # texture mapping interpolation mode from texture image, options: 'nearest', 'bilinear', 'bicubic'
-    texture_interpolation_mode: str= 'bilinear'
+    texture_interpolation_mode: str= 'nearest'
 
 
 @dataclass

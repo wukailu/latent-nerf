@@ -20,6 +20,8 @@ class GuideConfig:
     diffusion_name: str = 'CompVis/stable-diffusion-v1-4'
     # Guiding mesh
     shape_path: Optional[str] = None
+    # depth-guidance model path
+    dpt_model_path: str = "src/DPT/weights/dpt_hybrid-midas-501f0c75.pt"
     # Scale of mesh in 1x1x1 cube
     mesh_scale: float = 0.7
     # Define the proximal distance allowed
@@ -33,6 +35,8 @@ class OptimConfig:
     lambda_sparsity: float = 5e-4
     # Loss scale for mesh-guidance
     lambda_shape: float = 5e-6
+    # Loss scale for depth-guidance
+    lambda_depth: float = 1e-5
     # Seed for experiment
     seed: int = 0
     # Total iters
