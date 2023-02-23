@@ -251,18 +251,24 @@ class Trainer:
         loss_guidance = self.diffusion.train_step(text_z, pred_rgb)
         loss = loss_guidance
 
+        extra_loss = {}
+
         # Sparsity loss
         if 'sparsity_loss' in self.losses:
-            loss += self.cfg.optim.lambda_sparsity * self.losses['sparsity_loss'](pred_ws)
+            extra_loss['sparsity_loss'] = self.cfg.optim.lambda_sparsity * self.losses['sparsity_loss'](pred_ws)
 
         # Shape loss
         if 'shape_loss' in self.losses:
-            loss += self.cfg.optim.lambda_shape * self.losses['shape_loss'](outputs['xyzs'], outputs['sigmas'])
+            extra_loss['shape_loss'] = self.cfg.optim.lambda_shape * self.losses['shape_loss'](outputs['xyzs'], outputs['sigmas'])
 
         # Depth loss
         if 'depth_loss' in self.losses:
-            loss += self.cfg.optim.lambda_depth * self.losses['depth_loss'](render_rgb, pred_depth)
-        
+            extra_loss['depth_loss'] = self.cfg.optim.lambda_depth * self.losses['depth_loss'](render_rgb, pred_depth)
+
+        for k, v in extra_loss.items():
+            loss += v
+            logger.info(f"{k}:{v.cpu().detach().item()} ")
+
         return pred_rgb, pred_ws, loss
 
     def eval_render(self, data, bg_color=None, perturb=False):
