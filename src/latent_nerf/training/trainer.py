@@ -267,7 +267,7 @@ class Trainer:
 
         for k, v in extra_loss.items():
             loss += v
-            logger.info(f"{k}:{v.cpu().detach().item()} ")
+            # logger.info(f"{k}: {v.cpu().detach().item()} ")
 
         return pred_rgb, pred_ws, loss
 

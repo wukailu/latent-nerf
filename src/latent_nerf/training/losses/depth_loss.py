@@ -27,4 +27,4 @@ class DepthLoss(nn.Module):
         # print("depths_high_resolution", depths_high_resolution.shape)
         ref_depths = torch.nn.functional.interpolate(depths_high_resolution[None], size=depths.shape[-2:], mode='bilinear')[0][mask]
         depths = depths[mask]
-        return self.metric(ref_depths.to(depths), depths)
+        return -self.metric(ref_depths.to(depths), depths)  # pearson 1-> related -1 -> not related
