@@ -36,7 +36,7 @@ class OptimConfig:
     # Loss scale for mesh-guidance
     lambda_shape: float = 5e-6
     # Loss scale for depth-guidance
-    lambda_depth: float = 1e-1
+    lambda_depth: float = 1
     # Seed for experiment
     seed: int = 0
     # Total iters

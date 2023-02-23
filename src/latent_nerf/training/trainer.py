@@ -256,18 +256,20 @@ class Trainer:
         # Sparsity loss
         if 'sparsity_loss' in self.losses:
             extra_loss['sparsity_loss'] = self.cfg.optim.lambda_sparsity * self.losses['sparsity_loss'](pred_ws)
+            loss += extra_loss['sparsity_loss']
 
         # Shape loss
         if 'shape_loss' in self.losses:
             extra_loss['shape_loss'] = self.cfg.optim.lambda_shape * self.losses['shape_loss'](outputs['xyzs'], outputs['sigmas'])
+            loss += extra_loss['shape_loss']
 
         # Depth loss
         if 'depth_loss' in self.losses:
             extra_loss['depth_loss'] = self.cfg.optim.lambda_depth * self.losses['depth_loss'](render_rgb, pred_depth)
+            loss += extra_loss['depth_loss']
 
         for k, v in extra_loss.items():
-            loss += v
-            # logger.info(f"{k}: {v.cpu().detach().item()} ")
+            logger.info(f"{k}: {v.cpu().detach().item()} ")
 
         return pred_rgb, pred_ws, loss
 

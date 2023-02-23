@@ -10,7 +10,7 @@ class DepthLoss(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.model = load_dpt(self.cfg.dpt_model_path)
-        self.depth_threshold = 1e-3
+        self.depth_threshold = 0
         from torchmetrics import PearsonCorrCoef
         self.metric = PearsonCorrCoef()
 
@@ -21,6 +21,8 @@ class DepthLoss(nn.Module):
         """
         self.metric.to(rgbs.device)
         mask = depths > self.depth_threshold
+        if not mask.any():
+            return 0
         # print("rgbs shape ", rgbs.shape, depths.shape)
         down_rgbs = torch.nn.functional.interpolate(rgbs, (384, 384), mode='bilinear')
         depths_high_resolution = infer_depth(self.model, down_rgbs)
