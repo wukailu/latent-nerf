@@ -161,7 +161,7 @@ class Trainer:
                     self.evaluate(self.dataloaders['val'], self.eval_renders_path)
                     self.nerf.train()
 
-                if np.random.uniform(0, 1) < 0.05:
+                if np.random.uniform(0, 1) < 0.005:
                     # Randomly log rendered images throughout the training
                     self.log_train_renders(pred_rgbs)
         logger.info('Finished Training ^_^')
@@ -268,8 +268,8 @@ class Trainer:
             extra_loss['depth_loss'] = self.cfg.optim.lambda_depth * self.losses['depth_loss'](render_rgb, pred_depth)
             loss += extra_loss['depth_loss']
 
-        for k, v in extra_loss.items():
-            logger.info(f"{k}: {v.cpu().detach().item()} ")
+        # for k, v in extra_loss.items():
+        #     logger.info(f"{k}: {v.cpu().detach().item()} ")
 
         return pred_rgb, pred_ws, loss
 
