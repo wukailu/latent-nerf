@@ -61,11 +61,11 @@ class LogConfig:
     # Experiment output dir
     exp_root: Path = Path('experiments/')
     # How many steps between save step
-    save_interval: int = 100
+    save_interval: int = 1000
     # Run only test
     eval_only: bool = False
     # Number of angles to sample for eval during training
-    eval_size: int = 10
+    eval_size: int = 4
     # Number of angles to sample for eval after training
     full_eval_size: int = 100
     # Number of past checkpoints to keep
