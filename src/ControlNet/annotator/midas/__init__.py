@@ -36,3 +36,13 @@ class MidasDetector:
             normal_image = (normal * 127.5 + 127.5).clip(0, 255).astype(np.uint8)
 
             return depth_image, normal_image
+
+    def raw_depth(self, input_image):
+        assert input_image.ndim == 3
+        image_depth = input_image
+        with torch.no_grad():
+            image_depth = torch.from_numpy(image_depth).float().cuda()
+            image_depth = image_depth / 127.5 - 1.0
+            image_depth = rearrange(image_depth, 'h w c -> 1 c h w')
+            depth = self.model(image_depth)[0]
+            return depth
