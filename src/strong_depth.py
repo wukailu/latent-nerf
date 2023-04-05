@@ -10,6 +10,8 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', type=int, default=0, help='GPU ID to use')
+parser.add_argument('--ctn_from', type=int, default=0, help='continue from')
+parser.add_argument('--total_gpu', type=int, default=8, help='number of total gpus')
 args = parser.parse_args()
 
 import os
@@ -115,7 +117,7 @@ if __name__ == "__main__":
 
     print("work start!")
     datalen = len(dataset["train"])
-    for idx in range(args.gpu, datalen, 8):
+    for idx in range(args.gpu+(args.ctn_from//args.total_gpu*args.total_gpu), datalen, args.total_gpu):
         depth_map, image_id = dataset["train"][idx]['depth_map'], idx
         print(f"mapping {image_id} to {args.gpu}")
         # Process the task
