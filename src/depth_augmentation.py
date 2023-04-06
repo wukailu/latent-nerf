@@ -104,9 +104,9 @@ def depth_to_disparity(depth_map: np.array) -> np.array:
 # In[49]:
 import cv2
 
-negative_list = "text, signature, words, watermark, postcards, username, faces, person, bodies, mutilated, " \
+negative_list = "text, signature, words, watermark, poster, postcards, username, faces, person, bodies, mutilated, " \
                 "morbid, low quality, jpeg artifacts, duplicate, plane, cropped, worst quality, " \
-                "signature, watermark, blurry, text, signature, words, watermark"
+                "signature, watermark, blurry, text, signature, words, watermark, poster, postcards, username"
 
 if __name__ == "__main__":
     model = create_model('/home/wukailu/ControlNet/models/cldm_v15.yaml').cpu()
