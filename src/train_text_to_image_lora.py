@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Fine-tuning script for Stable Diffusion for text2image with support for LoRA."""
-
-# TODO: adapt RGBD
+# Note: requires diffusers >= 0.15.0
 
 import argparse
 import logging
+
 import math
 import os
 import random
@@ -40,11 +40,11 @@ from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
 import diffusers
-from diffusers import AutoencoderKL, DDPMScheduler, DiffusionPipeline, UNet2DConditionModel
+from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.loaders import AttnProcsLayers
 from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.optimization import get_scheduler
-from diffusers.utils import check_min_version, is_wandb_available
+from diffusers.utils import check_min_version, is_wandb_available, randn_tensor
 from diffusers.utils.import_utils import is_xformers_available
 
 
@@ -81,6 +81,26 @@ These are LoRA adaption weights for {base_model}. The weights were fine-tuned on
     with open(os.path.join(repo_folder, "README.md"), "w") as f:
         f.write(yaml + model_card)
 
+
+# Modified from StableDiffusionPipeline
+class StableDiffusionRGBDPipeline(StableDiffusionPipeline):
+    def run_safety_checker(self, image, device, dtype):
+        # safety checker is not compatible with RGBA image
+        has_nsfw_concept = None
+        return image, has_nsfw_concept
+
+    def decode_latents(self, latents):
+        def sample_to_numpy(image) -> np.ndarray:
+            image = (image / 2 + 0.5).clamp(0, 1)
+            # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            return image
+        latents = 1 / self.vae.config.scaling_factor * latents
+        rgb = self.vae.decode(latents[:4]).sample
+        disparity = self.vae.decode(latents[4:]).sample
+        rgb = sample_to_numpy(rgb)
+        disparity = sample_to_numpy(disparity)
+        return np.concatenate([rgb, disparity.mean(axis=-1, keepdims=True)], axis=-1)  # should be [N, H, W, 4]
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -224,6 +244,12 @@ def parse_args():
         type=float,
         default=1e-4,
         help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument(
+        "--conv_learning_rate",
+        type=float,
+        default=1e-4,
+        help="Initial learning rate (after the potential warmup period) to use for conv_in and conv_out in Unet.",
     )
     parser.add_argument(
         "--scale_lr",
@@ -417,9 +443,6 @@ def main():
     # freeze parameters of models to save more memory
     unet.requires_grad_(False)
     vae.requires_grad_(False)
-    # TODO: extend vae input and output
-    # TODO: test wheter we need to extend unet input as well
-
     text_encoder.requires_grad_(False)
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -480,6 +503,26 @@ def main():
 
     lora_layers = AttnProcsLayers(unet.attn_processors)
 
+    # Extend unet input and output
+    def expandConv2d(conv0: torch.nn.Conv2d, in_ch, out_ch):
+        """ expand the Conv2d, old part are used as initialization, others are 0.
+        """
+        old_out_ch, old_in_ch, _, _ = conv0.weight.shape
+        new_conv = torch.nn.Conv2d(in_ch, out_ch, conv0.kernel_size, stride=conv0.stride, padding=conv0.padding)
+        # Set weights all to 0
+        new_conv.bias.data *= 0
+        new_conv.weight.data *= 0
+        # Initialize with original weights, so in the first forward it's the same as original one
+        new_conv.bias.data[:old_out_ch] = conv0.bias
+        new_conv.weight.data[:old_out_ch, :old_in_ch] = conv0.weight
+        return new_conv
+    unet.conv_in = expandConv2d(unet.conv_in, 8, unet.conv_in.out_channels)
+    unet.conv_out = expandConv2d(unet.conv_out, unet.conv_out.in_channels, 8)
+    unet.in_channels = 8  # update this since it's a ConfigMixin
+    unet.out_channels = 8
+    io_layers = torch.nn.ModuleList([unet.conv_in, unet.conv_out])
+    # TODO: test whether 1. 扩张Unet 2.扩张 vae  3. 都扩张 哪个更好
+
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     if args.allow_tf32:
@@ -488,6 +531,9 @@ def main():
     if args.scale_lr:
         args.learning_rate = (
             args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
+        )
+        args.conv_learning_rate = (
+                args.conv_learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
     # Initialize the optimizer
@@ -503,8 +549,10 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
+    external_trainable = [{'params': io_layers.parameters(), 'lr': args.conv_learning_rate},
+                          {'params': lora_layers.parameters(), 'lr': args.learning_rate}]
     optimizer = optimizer_cls(
-        lora_layers.parameters(),
+        external_trainable,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -528,7 +576,7 @@ def main():
         if args.train_data_dir is not None:
             data_files["train"] = os.path.join(args.train_data_dir, "**")
         dataset = load_dataset(
-            "imagefolder",
+            "/data/NYU_gen",
             data_files=data_files,
             cache_dir=args.cache_dir,
         )
@@ -587,11 +635,6 @@ def main():
         )
         return inputs.input_ids
 
-    def load_disparity(examples):
-        """Load image and conert to one dims"""
-        from PIL import Image
-        return [Image.open(dis_path) for dis_path in examples[disparity_column]]
-
     # Preprocessing the datasets.
     train_transforms = transforms.Compose(
         [
@@ -603,10 +646,21 @@ def main():
         ]
     )
 
+    def load_RGBD(examples):
+        """Load RGBD image using RGBA format"""
+        from PIL import Image
+        ret = []
+        for example in examples:
+            rgb = example[image_column].convert("RGB")
+            disp = example[disparity_column].convert("RGB")
+            rgba = Image.fromarray(np.concatenate([np.array(rgb), np.array(disp)[..., :1]], axis=-1), "RGBA")
+            ret.append(rgba)
+        return ret
+
     def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
-        disparites = load_disparity(examples)  # TODO: add disparity to last channel to make RGBA Image
-        examples["pixel_values"] = [train_transforms(image) for image in images]
+        transformed = [train_transforms(image) for image in load_RGBD(examples)]
+        examples["pixel_values"] = [img[:3] for img in transformed]
+        examples["disparity_values"] = [img[3:].repeat_interleave(3, 0) for img in transformed]
         examples["input_ids"] = tokenize_captions(examples)
         return examples
 
@@ -619,8 +673,10 @@ def main():
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
         pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+        disparity = torch.stack([example["disparity_values"] for example in examples])
+        disparity = disparity.to(memory_format=torch.contiguous_format).float()
         input_ids = torch.stack([example["input_ids"] for example in examples])
-        return {"pixel_values": pixel_values, "input_ids": input_ids}
+        return {"pixel_values": pixel_values, "input_ids": input_ids, "disparity_values": disparity}
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -646,8 +702,8 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    lora_layers, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        lora_layers, optimizer, train_dataloader, lr_scheduler
+    io_layers, lora_layers, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        io_layers, lora_layers, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -715,8 +771,10 @@ def main():
                 continue
 
             with accelerator.accumulate(unet):
-                # Convert images to latent space
+                # Convert images to latent space, and cat the depth value
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents_disp = vae.encode(batch["disparity_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents = torch.cat([latents, latents_disp], dim=1)
                 latents = latents * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
@@ -760,6 +818,8 @@ def main():
                 if accelerator.sync_gradients:
                     params_to_clip = lora_layers.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    params_to_clip = io_layers.parameters()
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -790,7 +850,7 @@ def main():
                     f" {args.validation_prompt}."
                 )
                 # create pipeline
-                pipeline = DiffusionPipeline.from_pretrained(
+                pipeline = StableDiffusionRGBDPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     unet=accelerator.unwrap_model(unet),
                     revision=args.revision,
@@ -847,7 +907,7 @@ def main():
 
     # Final inference
     # Load previous pipeline
-    pipeline = DiffusionPipeline.from_pretrained(
+    pipeline = StableDiffusionRGBDPipeline.from_pretrained(
         args.pretrained_model_name_or_path, revision=args.revision, torch_dtype=weight_dtype
     )
     pipeline = pipeline.to(accelerator.device)
@@ -860,6 +920,9 @@ def main():
     images = []
     for _ in range(args.num_validation_images):
         images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
+
+    # Save all
+    pipeline.save_pretrained(os.path.join(args.output_dir, "full_model"))
 
     if accelerator.is_main_process:
         for tracker in accelerator.trackers:
