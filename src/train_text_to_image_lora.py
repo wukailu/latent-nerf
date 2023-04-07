@@ -14,6 +14,8 @@
 # limitations under the License.
 """Fine-tuning script for Stable Diffusion for text2image with support for LoRA."""
 
+# TODO: adapt RGBD
+
 import argparse
 import logging
 import math
@@ -126,10 +128,12 @@ def parse_args():
         "--image_column", type=str, default="image", help="The column of the dataset containing an image."
     )
     parser.add_argument(
-        "--caption_column",
-        type=str,
-        default="text",
+        "--caption_column", type=str, default="text",
         help="The column of the dataset containing a caption or a list of captions.",
+    )
+    parser.add_argument(
+        "--disparity_column", type=str, default="disparity",
+        help="The column of the dataset containing an image for disparity.",
     )
     parser.add_argument(
         "--validation_prompt", type=str, default=None, help="A prompt that is sampled during training for inference."
@@ -413,6 +417,8 @@ def main():
     # freeze parameters of models to save more memory
     unet.requires_grad_(False)
     vae.requires_grad_(False)
+    # TODO: extend vae input and output
+    # TODO: test wheter we need to extend unet input as well
 
     text_encoder.requires_grad_(False)
 
@@ -528,6 +534,8 @@ def main():
         )
         # See more about loading custom images at
         # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
+        # TODO: determine the dataset format, remeber to move /data/NYU_gen/... to .../data_finetune/train/...
+        print("======dataset format from ImageFolder is ======", dataset["train"][0])
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
@@ -543,8 +551,16 @@ def main():
             raise ValueError(
                 f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
             )
+    if args.disparity_column is None:
+        disparity_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+    else:
+        disparity_column = args.disparity_column
+        if disparity_column not in column_names:
+            raise ValueError(
+                f"--disparity_column' value '{args.disparity_column}' needs to be one of: {', '.join(column_names)}"
+            )
     if args.caption_column is None:
-        caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+        caption_column = dataset_columns[2] if dataset_columns is not None else column_names[2]
     else:
         caption_column = args.caption_column
         if caption_column not in column_names:
@@ -571,6 +587,11 @@ def main():
         )
         return inputs.input_ids
 
+    def load_disparity(examples):
+        """Load image and conert to one dims"""
+        from PIL import Image
+        return [Image.open(dis_path) for dis_path in examples[disparity_column]]
+
     # Preprocessing the datasets.
     train_transforms = transforms.Compose(
         [
@@ -584,6 +605,7 @@ def main():
 
     def preprocess_train(examples):
         images = [image.convert("RGB") for image in examples[image_column]]
+        disparites = load_disparity(examples)  # TODO: add disparity to last channel to make RGBA Image
         examples["pixel_values"] = [train_transforms(image) for image in images]
         examples["input_ids"] = tokenize_captions(examples)
         return examples
