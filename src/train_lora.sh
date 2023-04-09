@@ -4,12 +4,12 @@ DATA_DIR="/data/NYU_gen"
 HF_DATASETS_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 
-accelerate launch --mixed_precision="fp16" train_text_to_image_lora.py \
+accelerate launch --num_processes=4 train_text_to_image_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
-  --train_data_dir=$DATA_DIR --caption_column="text" \
+  --dataset_name=$DATA_DIR --caption_column="text" \
   --resolution=512 --random_flip \
-  --train_batch_size=1 \
-  --num_train_epochs=100 --checkpointing_steps=5000 \
+  --train_batch_size=4 \
+  --num_train_epochs=20 --checkpointing_steps=10000 \
   --conv_learning_rate=1e-05 --learning_rate=1e-04 --lr_scheduler="constant" --lr_warmup_steps=0 \
   --seed=42 \
   --output_dir=$OUTPUT_DIR \

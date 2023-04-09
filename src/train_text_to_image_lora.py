@@ -96,8 +96,8 @@ class StableDiffusionRGBDPipeline(StableDiffusionPipeline):
             image = image.cpu().permute(0, 2, 3, 1).float().numpy()
             return image
         latents = 1 / self.vae.config.scaling_factor * latents
-        rgb = self.vae.decode(latents[:4]).sample
-        disparity = self.vae.decode(latents[4:]).sample
+        rgb = self.vae.decode(latents[:, :4]).sample
+        disparity = self.vae.decode(latents[:, 4:]).sample
         rgb = sample_to_numpy(rgb)
         disparity = sample_to_numpy(disparity)
         return np.concatenate([rgb, disparity.mean(axis=-1, keepdims=True)], axis=-1)  # should be [N, H, W, 4]
@@ -521,6 +521,7 @@ def main():
     unet.in_channels = 8  # update this since it's a ConfigMixin
     unet.out_channels = 8
     io_layers = torch.nn.ModuleList([unet.conv_in, unet.conv_out])
+    io_layers.to(accelerator.device, dtype=weight_dtype)
     # TODO: test whether 1. 扩张Unet 2.扩张 vae  3. 都扩张 哪个更好
 
     # Enable TF32 for faster training on Ampere GPUs,
@@ -576,14 +577,12 @@ def main():
         if args.train_data_dir is not None:
             data_files["train"] = os.path.join(args.train_data_dir, "**")
         dataset = load_dataset(
-            "/data/NYU_gen",
+            "imagefolder",
             data_files=data_files,
             cache_dir=args.cache_dir,
         )
         # See more about loading custom images at
         # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
-        # TODO: determine the dataset format, remeber to move /data/NYU_gen/... to .../data_finetune/train/...
-        print("======dataset format from ImageFolder is ======", dataset["train"][0])
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
@@ -650,9 +649,7 @@ def main():
         """Load RGBD image using RGBA format"""
         from PIL import Image
         ret = []
-        for example in examples:
-            rgb = example[image_column].convert("RGB")
-            disp = example[disparity_column].convert("RGB")
+        for rgb, disp in zip(examples[image_column], examples[disparity_column]):
             rgba = Image.fromarray(np.concatenate([np.array(rgb), np.array(disp)[..., :1]], axis=-1), "RGBA")
             ret.append(rgba)
         return ret
@@ -889,7 +886,6 @@ def main():
     if accelerator.is_main_process:
         unet = unet.to(torch.float32)
         unet.save_attn_procs(args.output_dir)
-
         if args.push_to_hub:
             save_model_card(
                 repo_id,
@@ -908,11 +904,19 @@ def main():
     # Final inference
     # Load previous pipeline
     pipeline = StableDiffusionRGBDPipeline.from_pretrained(
-        args.pretrained_model_name_or_path, revision=args.revision, torch_dtype=weight_dtype
+        args.pretrained_model_name_or_path, revision=args.revision, torch_dtype=weight_dtype,
     )
+    unet = unet.to(weight_dtype)
     pipeline = pipeline.to(accelerator.device)
+    pipeline.unet.conv_in = unet.conv_in
+    pipeline.unet.conv_out = unet.conv_out
+    pipeline.unet.in_channels = 8  # update this since it's a ConfigMixin
+    pipeline.unet.out_channels = 8
+    # Save all
+    # remember manually to modify unet.config.yaml
+    pipeline.save_pretrained(os.path.join(args.output_dir, "full_model"))
 
-    # load attention processors
+    # # load attention processors
     pipeline.unet.load_attn_procs(args.output_dir)
 
     # run inference
@@ -920,9 +924,6 @@ def main():
     images = []
     for _ in range(args.num_validation_images):
         images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
-
-    # Save all
-    pipeline.save_pretrained(os.path.join(args.output_dir, "full_model"))
 
     if accelerator.is_main_process:
         for tracker in accelerator.trackers:
@@ -940,6 +941,9 @@ def main():
                 )
 
     accelerator.end_training()
+    print("sleep for uploading")
+    from time import sleep
+    sleep(120)
 
 
 if __name__ == "__main__":
