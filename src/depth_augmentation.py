@@ -27,7 +27,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 
 
 import sys
-sys.path += ["/home/wukailu/ControlNet"]
+sys.path += ["/home/wukailu/latent-nerf/src/ControlNet"]
 import einops
 import numpy as np
 import torch
@@ -41,7 +41,7 @@ from cldm.ddim_hacked import DDIMSampler
 # In[14]:
 
 
-def process(detected_map, prompt, n_prompt, model, ddim_sampler, seed=-1, a_prompt='best quality, extremely detailed', num_samples=1, ddim_steps=50, guess_mode=False, strength=1.0, scale=9.0, eta=0.0):
+def process(detected_map, prompt, n_prompt, model, ddim_sampler, seed=-1, a_prompt='best quality, extremely detailed', num_samples=1, ddim_steps=30, guess_mode=False, strength=1.0, scale=9.0, eta=0.0):
     with torch.no_grad():
         H, W, _ = detected_map.shape
 
@@ -94,28 +94,34 @@ def depth_to_disparity(depth_map: np.array) -> np.array:
 
 
 # In[49]:
-import cv2
 
 negative_list = "text, signature, words, watermark, poster, postcards, username, faces, person, bodies, mutilated, " \
                 "morbid, low quality, jpeg artifacts, duplicate, plane, cropped, worst quality, " \
                 "signature, watermark, blurry, text, signature, words, watermark, poster, postcards, username"
 
 if __name__ == "__main__":
-    model = create_model('/home/wukailu/ControlNet/models/cldm_v15.yaml').cpu()
-    model.load_state_dict(load_state_dict('/home/wukailu/ControlNet/models/control_sd15_depth.pth', location='cuda'))
+    model = create_model('/home/wukailu/latent-nerf/src/ControlNet/models/cldm_v15.yaml').cpu()
+    model.load_state_dict(load_state_dict('/home/wukailu/latent-nerf/src/ControlNet/models/control_sd15_depth.pth', location='cuda'))
     model = model.cuda()
     ddim_sampler = DDIMSampler(model)
     save_memory = False
 
     print("work start!")
+    gen_imgs = {}
     save_dir = "/data/NYU_processed/"
+    save_interval = 1000
+    cur = args.st
+    skip_exist = True
+    os.makedirs(save_dir + "gen_images", exist_ok=True)
     for image_id in range(args.st, args.en):
-        print(f"mapping {image_id} to {args.gpu}")
-        # Process the task
-        disparity = np.arrray(Image.open(os.path.join(save_dir, "disparity", f"{image_id}.png")).convert("RGB"))
-        ret = process(disparity, "indoor", negative_list, model, ddim_sampler,
-                      num_samples=2, seed=2022211257)
-        os.makedirs(save_dir+"/images", exist_ok=True)
-        for idx, gen_img in enumerate(ret[1:]):
-            Image.fromarray(gen_img).save(save_dir +f"/images/{image_id}_gen_{idx}.png")
-
+        disp_path = os.path.join(save_dir, "disparity", f"{image_id}.png")
+        if os.path.exists(disp_path):
+            if skip_exist and os.path.exists(save_dir + f"gen_images/{image_id}_gen_{1}.png"):
+                continue
+            print(f"mapping {image_id} to {args.gpu}")
+            # Process the task
+            disparity = np.array(Image.open(disp_path).convert("RGB"))
+            ret = process(disparity, "indoor", negative_list, model, ddim_sampler,
+                          num_samples=2, seed=2022211257)
+            for idx, gen_img in enumerate(ret[1:]):
+                Image.fromarray(gen_img).save(save_dir + f"gen_images/{image_id}_gen_{idx}.png")
