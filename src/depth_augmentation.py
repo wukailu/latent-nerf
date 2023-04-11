@@ -10,21 +10,13 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', type=int, default=0, help='GPU ID to use')
-parser.add_argument('--ctn_from', type=int, default=0, help='continue from')
-parser.add_argument('--total_gpu', type=int, default=8, help='number of total gpus')
+parser.add_argument('--st', type=int, default=0, help='continue from')
+parser.add_argument('--en', type=int, default=0, help='end at (not included)')
 args = parser.parse_args()
 
 import os
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-
-# from datasets import load_dataset
-# dataset = load_dataset("sayakpaul/nyu_depth_v2")
-# dataset.save_to_disk('/data/NYUDepthV2')
-
-from datasets import load_from_disk
-dataset = load_from_disk("/data/NYUDepthV2")
-
 
 # # Augment the dataset by generate new images using depth image
 # * 每张图片的GT深度图生成新的图片(5张)
@@ -116,19 +108,14 @@ if __name__ == "__main__":
     save_memory = False
 
     print("work start!")
-    datalen = len(dataset["train"])
-    for idx in range(args.gpu+(args.ctn_from//args.total_gpu*args.total_gpu), datalen, args.total_gpu):
-        depth_map, image_id = dataset["train"][idx]['depth_map'], idx
+    save_dir = "/data/NYU_processed/"
+    for image_id in range(args.st, args.en):
         print(f"mapping {image_id} to {args.gpu}")
         # Process the task
-        disparity = depth_to_disparity(np.array(depth_map))
-        assert disparity.shape == (480, 640), str(disparity.shape)
-        disparity = cv2.resize(disparity[:, 80:-80], (512, 512), interpolation=cv2.INTER_LINEAR)
-        ret = process(disparity[..., np.newaxis].repeat(3, axis=-1), "indoor", negative_list, model, ddim_sampler,
+        disparity = np.arrray(Image.open(os.path.join(save_dir, "disparity", f"{image_id}.png")).convert("RGB"))
+        ret = process(disparity, "indoor", negative_list, model, ddim_sampler,
                       num_samples=2, seed=2022211257)
-        os.makedirs("/data/NYU_gen/disparity", exist_ok=True)
-        os.makedirs("/data/NYU_gen/images", exist_ok=True)
-        Image.fromarray(ret[0]).save(f"/data/NYU_gen/disparity/{image_id}.png")
+        os.makedirs(save_dir+"/images", exist_ok=True)
         for idx, gen_img in enumerate(ret[1:]):
-            Image.fromarray(gen_img).save(f"/data/NYU_gen/images/{image_id}_gen_{idx}.png")
+            Image.fromarray(gen_img).save(save_dir +f"/images/{image_id}_gen_{idx}.png")
 
