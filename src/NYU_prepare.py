@@ -44,9 +44,8 @@ if __name__ == "__main__":
         depth_map, image_id = dataset["train"][idx]['depth_map'], idx
         image = np.array(dataset["train"][idx]['image'])[:, 80:-80]
         # Process the task
-        disparity = depth_to_disparity(np.array(depth_map)[:, 80:-80])
-        assert disparity.shape == (480, 480), str(disparity.shape)
-        disparity = cv2.resize(disparity, (512, 512), interpolation=cv2.INTER_LINEAR)
+        depth_map = cv2.resize(np.array(depth_map)[:, 80:-80], (512, 512), interpolation=cv2.INTER_LINEAR)
+        disparity = depth_to_disparity(depth_map)
         os.makedirs("/data/NYU_ori/disparity", exist_ok=True)
         os.makedirs("/data/NYU_ori/images", exist_ok=True)
         Image.fromarray(disparity).save(f"/data/NYU_ori/disparity/{image_id}.png")

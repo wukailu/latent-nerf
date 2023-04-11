@@ -205,6 +205,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=4,
+        help=(
+            "The rank for lora finetuning."
+        ),
+    )
+    parser.add_argument(
         "--center_crop",
         default=False,
         action="store_true",
@@ -484,7 +492,7 @@ def main():
             block_id = int(name[len("down_blocks.")])
             hidden_size = unet.config.block_out_channels[block_id]
 
-        lora_attn_procs[name] = LoRAAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
+        lora_attn_procs[name] = LoRAAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.lora_rank)
 
     unet.set_attn_processor(lora_attn_procs)
 
