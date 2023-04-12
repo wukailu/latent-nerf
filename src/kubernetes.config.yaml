@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+  name: pvc-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: ubuntu-pvc
+  template:
+    metadata:
+      labels:
+        name: ubuntu-pvc
+    spec:
+      hostNetwork: true
+      hostIPC: true
+      volumes:
+        - name: pvc-mount  # 和下面的名字对应
+          persistentVolumeClaim:
+            claimName: pvc-wuvin  # 填写你想要挂载的pvc，pvc申请见pvc-example.yaml
+      containers:
+      - name: orion-client-hvd
+        volumeMounts:
+          - name: pvc-mount  # 和上面的名字对应
+            mountPath: /data # 在pod的文件系统中的挂载点
+        imagePullPolicy: Always
+        image: harbor.iiis.co/wuvin/pylight:v4
+        command: ["bash", "-c", "--"]
+        args: ["while true; do sleep 30; done;"]
+        resources:
+          limits:
+            cpu: 20 # 最大CPU
+            memory: 256Gi # 最大内存数目
+            virtaitech.com/gpu: 0  # 最大GPU数目
+          requests:
+            cpu: 4 # 小CPU
+            memory: 64Gi # 最小内存数目
+            virtaitech.com/gpu: 0  # 最小需要的GPU数目
+        env:
+          - name : ORION_GMEM
+            value : "11000"  # 每张显卡的显存，单位为M
+          - name : ORION_RATIO
+            value : "100"
+          - name: ORION_VGPU
+            value: "1"
+          - name: ORION_RESERVED
+            value: "0"
+          - name: ORION_CROSS_NODE
+            value: "0"
+          - name : ORION_GROUP_ID
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.uid
