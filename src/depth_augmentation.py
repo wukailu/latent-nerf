@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', type=int, default=0, help='GPU ID to use')
 parser.add_argument('--st', type=int, default=0, help='continue from')
 parser.add_argument('--en', type=int, default=0, help='end at (not included)')
+parser.add_argument('--query', action="store_true", help='just check how many have gen')
 args = parser.parse_args()
 
 import os
@@ -98,8 +99,22 @@ def depth_to_disparity(depth_map: np.array) -> np.array:
 negative_list = "text, signature, words, watermark, poster, postcards, username, faces, person, bodies, mutilated, " \
                 "morbid, low quality, jpeg artifacts, duplicate, plane, cropped, worst quality, " \
                 "signature, watermark, blurry, text, signature, words, watermark, poster, postcards, username"
+save_dir = "/data/NYU_processed/"
 
 if __name__ == "__main__":
+    if args.query:
+        cnt = 0
+        # just query
+        for image_id in range(args.st, args.en):
+            disp_path = os.path.join(save_dir, "disparity", f"{image_id}.png")
+            if os.path.exists(disp_path):
+                if os.path.exists(save_dir + f"gen_images/{image_id}_gen_{1}.png"):
+                    cnt += 1
+                    continue
+        print("cnt: ", cnt)
+        exit(0)
+
+
     model = create_model('/home/wukailu/latent-nerf/src/ControlNet/models/cldm_v15.yaml').cpu()
     model.load_state_dict(load_state_dict('/home/wukailu/latent-nerf/src/ControlNet/models/control_sd15_depth.pth', location='cuda'))
     model = model.cuda()
@@ -108,7 +123,6 @@ if __name__ == "__main__":
 
     print("work start!")
     gen_imgs = {}
-    save_dir = "/data/NYU_processed/"
     save_interval = 1000
     cur = args.st
     skip_exist = True
