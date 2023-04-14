@@ -46,6 +46,8 @@ from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available, randn_tensor
 from diffusers.utils.import_utils import is_xformers_available
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -97,10 +99,10 @@ class StableDiffusionRGBDPipeline(StableDiffusionPipeline):
             return image
         latents = 1 / self.vae.config.scaling_factor * latents
         rgb = self.vae.decode(latents[:, :4]).sample
-        disparity = self.vae.decode(latents[:, 4:]).sample
+        depth = self.vae.decode(latents[:, 4:]).sample
         rgb = sample_to_numpy(rgb)
-        disparity = sample_to_numpy(disparity)
-        return np.concatenate([rgb, disparity.mean(axis=-1, keepdims=True)], axis=-1)  # should be [N, H, W, 4]
+        depth = sample_to_numpy(depth)
+        return np.concatenate([rgb, depth.mean(axis=-1, keepdims=True)], axis=-1)  # should be [N, H, W, 4]
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -119,6 +121,14 @@ def parse_args():
         help="Revision of pretrained model identifier from huggingface.co/models.",
     )
     parser.add_argument(
+        "--depth_max",
+        type=float,
+        default=20.,
+        help=(
+            "maximum depth in depth maps, further than this will be clipped"
+        ),
+    )
+    parser.add_argument(
         "--dataset_name",
         type=str,
         default=None,
@@ -129,10 +139,10 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--dataset_config_name",
+        "--dataset_split",
         type=str,
-        default=None,
-        help="The config of the Dataset, leave as None if there's only one config.",
+        default="train",
+        help="The split of the Dataset, usage at https://huggingface.co/docs/datasets/loading#slice-splits.",
     )
     parser.add_argument(
         "--train_data_dir",
@@ -152,8 +162,12 @@ def parse_args():
         help="The column of the dataset containing a caption or a list of captions.",
     )
     parser.add_argument(
-        "--disparity_column", type=str, default="disparity",
-        help="The column of the dataset containing an image for disparity.",
+        "--depth_column", type=str, default="depth",
+        help="The column of the dataset containing an image for depth.",
+    )
+    parser.add_argument(
+        "--use_disparity", action="store_true",
+        help="Use disparity instead of depth",
     )
     parser.add_argument(
         "--validation_prompt", type=str, default=None, help="A prompt that is sampled during training for inference."
@@ -225,6 +239,11 @@ def parse_args():
         "--random_flip",
         action="store_true",
         help="whether to randomly flip images horizontally",
+    )
+    parser.add_argument(
+        "--random_HSV",
+        action="store_true",
+        help="whether to randomly HueSaturationValue pertubations",
     )
     parser.add_argument(
         "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
@@ -526,8 +545,8 @@ def main():
         return new_conv
     unet.conv_in = expandConv2d(unet.conv_in, 8, unet.conv_in.out_channels)
     unet.conv_out = expandConv2d(unet.conv_out, unet.conv_out.in_channels, 8)
-    unet.in_channels = 8  # update this since it's a ConfigMixin
-    unet.out_channels = 8
+    unet.config.in_channels = 8  # update this since it's a ConfigMixin
+    unet.config.out_channels = 8
     io_layers = torch.nn.ModuleList([unet.conv_in, unet.conv_out])
     io_layers.to(accelerator.device, dtype=weight_dtype)
     # TODO: test whether 1. 扩张Unet 2.扩张 vae  3. 都扩张 哪个更好
@@ -577,8 +596,9 @@ def main():
         # Downloading and loading a dataset from the hub.
         dataset = load_dataset(
             args.dataset_name,
-            args.dataset_config_name,
+            split=args.dataset_split,
             cache_dir=args.cache_dir,
+            num_proc=64,
         )
     else:
         data_files = {}
@@ -587,7 +607,9 @@ def main():
         dataset = load_dataset(
             "imagefolder",
             data_files=data_files,
+            split=args.dataset_split,
             cache_dir=args.cache_dir,
+            num_proc=64,
         )
         # See more about loading custom images at
         # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
@@ -606,13 +628,13 @@ def main():
             raise ValueError(
                 f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
             )
-    if args.disparity_column is None:
-        disparity_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+    if args.depth_column is None:
+        depth_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
     else:
-        disparity_column = args.disparity_column
-        if disparity_column not in column_names:
+        depth_column = args.depth_column
+        if depth_column not in column_names:
             raise ValueError(
-                f"--disparity_column' value '{args.disparity_column}' needs to be one of: {', '.join(column_names)}"
+                f"--depth_column' value '{args.depth_column}' needs to be one of: {', '.join(column_names)}"
             )
     if args.caption_column is None:
         caption_column = dataset_columns[2] if dataset_columns is not None else column_names[2]
@@ -643,30 +665,37 @@ def main():
         return inputs.input_ids
 
     # Preprocessing the datasets.
-    train_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
-            transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
+    train_transforms = A.Compose(
+        transforms=[
+            A.Resize(args.resolution, args.resolution),
+            A.CenterCrop(args.resolution, args.resolution) if args.center_crop else A.RandomCrop(args.resolution, args.resolution),
+            A.Flip(d=1) if args.random_flip else A.Lambda(lambda x: x),
+            A.HueSaturationValue() if args.random_HSV else A.Lambda(lambda x: x),
+            A.Normalize(mean=0.5, std=0.5, max_pixel_value=255.),
+            ToTensorV2(),
+        ],
+        additional_targets={"depth": "mask"},
     )
 
     def load_RGBD(examples):
         """Load RGBD image using RGBA format"""
         from PIL import Image
         ret = []
-        for rgb, disp in zip(examples[image_column], examples[disparity_column]):
-            rgba = Image.fromarray(np.concatenate([np.array(rgb), np.array(disp)[..., :1]], axis=-1), "RGBA")
+        for rgb, depth in zip(examples[image_column], examples[depth_column]):
+            rgba = Image.fromarray(np.concatenate([np.array(rgb), np.array(depth)[..., :1]], axis=-1), "RGBA")
             ret.append(rgba)
         return ret
 
     def preprocess_train(examples):
-        transformed = [train_transforms(image) for image in load_RGBD(examples)]
-        examples["pixel_values"] = [img[:3] for img in transformed]
-        examples["disparity_values"] = [img[3:].repeat_interleave(3, 0) for img in transformed]
+        depth_max = 255. if args.use_disparity else args.depth_max
+        transformed = train_transforms(image=np.array(examples[image_column]), depth=np.array(examples[depth_column]))
+        examples["pixel_values"] = transformed["image"]
+        examples["depth_values"] = transformed["depth"] / depth_max * 2 - 1
         examples["input_ids"] = tokenize_captions(examples)
+        # transformed = [train_transforms(image) for image in load_RGBD(examples)]
+        # examples["pixel_values"] = [img[:3] for img in transformed]
+        # examples["depth_values"] = [img[3:].repeat_interleave(3, 0) for img in transformed]
+        # examples["input_ids"] = tokenize_captions(examples)
         return examples
 
     with accelerator.main_process_first():
@@ -678,10 +707,10 @@ def main():
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
         pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-        disparity = torch.stack([example["disparity_values"] for example in examples])
-        disparity = disparity.to(memory_format=torch.contiguous_format).float()
+        depth = torch.stack([example["depth_values"] for example in examples])
+        depth = depth.to(memory_format=torch.contiguous_format).float()
         input_ids = torch.stack([example["input_ids"] for example in examples])
-        return {"pixel_values": pixel_values, "input_ids": input_ids, "disparity_values": disparity}
+        return {"pixel_values": pixel_values, "input_ids": input_ids, "depth_values": depth}
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -778,8 +807,8 @@ def main():
             with accelerator.accumulate(unet):
                 # Convert images to latent space, and cat the depth value
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                latents_disp = vae.encode(batch["disparity_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                latents = torch.cat([latents, latents_disp], dim=1)
+                latents_depth = vae.encode(batch["depth_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents = torch.cat([latents, latents_depth], dim=1)
                 latents = latents * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
@@ -918,8 +947,8 @@ def main():
     pipeline = pipeline.to(accelerator.device)
     pipeline.unet.conv_in = unet.conv_in
     pipeline.unet.conv_out = unet.conv_out
-    pipeline.unet.in_channels = 8  # update this since it's a ConfigMixin
-    pipeline.unet.out_channels = 8
+    pipeline.unet.config.in_channels = 8  # update this since it's a ConfigMixin
+    pipeline.unet.config.out_channels = 8
     # Save all
     # remember manually to modify unet.config.yaml
     pipeline.save_pretrained(os.path.join(args.output_dir, "full_model"))
@@ -949,7 +978,7 @@ def main():
                 )
 
     accelerator.end_training()
-    print("sleep for uploading")
+    logger.info(f"sleep for uploading")
     from time import sleep
     sleep(120)
 

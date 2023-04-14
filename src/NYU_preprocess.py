@@ -13,9 +13,6 @@ dataset = load_from_disk("/data/NYUDepthV2")
 
 # In[ ]:
 
-
-import sys
-sys.path += ["/home/wukailu/ControlNet"]
 import numpy as np
 from PIL import Image
 
@@ -83,17 +80,18 @@ def depth_to_disparity(depth_map: np.array) -> np.array:
     return disparity_map.round().astype(np.uint8)
 
 # In[]:
-def process_item(idx):
+def process_item(idx, save=True):
     depth_map, image_id = np.array(dataset["train"][idx]['depth_map']), idx
     depth_map = preprocess(depth_map)[10:-10, 90:-90]
     depth_map = cv2.resize(depth_map, (512, 512), interpolation=cv2.INTER_LINEAR)
     disparity_map = depth_to_disparity(depth_map)
     image = np.array(dataset["train"][idx]['image'])[10:-10, 90:-90]
     image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_CUBIC).round().astype(np.uint8)
-    os.makedirs(save_dir + "disparity", exist_ok=True)
-    os.makedirs(save_dir + "origin_images", exist_ok=True)
-    Image.fromarray(disparity_map).save(os.path.join(save_dir, "disparity", f"{image_id}.png"))
-    Image.fromarray(image).save(os.path.join(save_dir, "origin_images", f"{image_id}.png"))
+    if save:
+        os.makedirs(save_dir + "disparity", exist_ok=True)
+        os.makedirs(save_dir + "origin_images", exist_ok=True)
+        Image.fromarray(disparity_map).save(os.path.join(save_dir, "disparity", f"{image_id}.png"))
+        Image.fromarray(image).save(os.path.join(save_dir, "origin_images", f"{image_id}.png"))
     return depth_map, disparity_map, image
 
 # In[49]:
@@ -109,10 +107,10 @@ if __name__ == "__main__":
     ret = Parallel(n_jobs=96)(delayed(process_item)(idx) for idx in tqdm(range(0, datalen)))
     depth_maps, disparity_maps, cropped_images = list(zip(*ret))
 
-    import pickle
-    with open(save_dir + "data.pkl", "wb") as f:
-        pickle.dump({
-            "depth": depth_maps,
-            "disparity": depth_maps,
-            "image": cropped_images,
-        }, f)
+    import h5py
+    import numpy as np
+
+    depth_maps = np.array(depth_maps).astype(np.float32)
+    with h5py.File("/data/NYU_processed/" + "depth.h5py", "w") as f:
+        # Create a new dataset in the file and store the depth values in it
+        dset = f.create_dataset("depth", data=depth_maps, compression='lzf')
