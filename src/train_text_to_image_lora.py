@@ -21,7 +21,6 @@ import logging
 import math
 import os
 import random
-from pathlib import Path
 
 import datasets
 import numpy as np
@@ -32,10 +31,8 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from datasets import load_dataset
-from huggingface_hub import create_repo, upload_folder
+from datasets import load_dataset, load_from_disk
 from packaging import version
-from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
@@ -44,7 +41,7 @@ from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNe
 from diffusers.loaders import AttnProcsLayers
 from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.optimization import get_scheduler
-from diffusers.utils import check_min_version, is_wandb_available, randn_tensor
+from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
@@ -139,10 +136,12 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--dataset_split",
+        "--local_data",
         type=str,
-        default="train",
-        help="The split of the Dataset, usage at https://huggingface.co/docs/datasets/loading#slice-splits.",
+        default=None,
+        help=(
+            "local dataset that to be load using load_from_disk, in format of DatasetDict({'train': Dataset, ...})"
+        ),
     )
     parser.add_argument(
         "--train_data_dir",
@@ -153,6 +152,12 @@ def parse_args():
             " https://huggingface.co/docs/datasets/image_dataset#imagefolder. In particular, a `metadata.jsonl` file"
             " must exist to provide the captions for the images. Ignored if `dataset_name` is specified."
         ),
+    )
+    parser.add_argument(
+        "--dataset_split",
+        type=str,
+        default="train",
+        help="The split of the Dataset, usage at https://huggingface.co/docs/datasets/loading#slice-splits.",
     )
     parser.add_argument(
         "--image_column", type=str, default="image", help="The column of the dataset containing an image."
@@ -397,15 +402,10 @@ def parse_args():
         args.local_rank = env_local_rank
 
     # Sanity checks
-    if args.dataset_name is None and args.train_data_dir is None:
-        raise ValueError("Need either a dataset name or a training folder.")
+    if args.dataset_name is None and args.local_data is None and args.train_data_dir is None:
+        raise ValueError("Need a dataset name, local data path or a training folder.")
 
     return args
-
-
-DATASET_NAME_MAPPING = {
-    "lambdalabs/pokemon-blip-captions": ("image", "text"),
-}
 
 
 def main():
@@ -451,10 +451,6 @@ def main():
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
-        if args.push_to_hub:
-            repo_id = create_repo(
-                repo_id=args.hub_model_id or Path(args.output_dir).name, exist_ok=True, token=args.hub_token
-            ).repo_id
     # Load scheduler, tokenizer and models.
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     tokenizer = CLIPTokenizer.from_pretrained(
@@ -479,11 +475,6 @@ def main():
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
-
-    # Move unet, vae and text_encoder to device and cast to weight_dtype
-    unet.to(accelerator.device, dtype=weight_dtype)
-    vae.to(accelerator.device, dtype=weight_dtype)
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # now we will add new LoRA weights to the attention layers
     # It's important to realize here how many attention weights will be added and of which sizes
@@ -510,10 +501,13 @@ def main():
         elif name.startswith("down_blocks"):
             block_id = int(name[len("down_blocks.")])
             hidden_size = unet.config.block_out_channels[block_id]
+        else:
+            raise "hidden_size can not be determined."
 
         lora_attn_procs[name] = LoRAAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, rank=args.lora_rank)
 
     unet.set_attn_processor(lora_attn_procs)
+    lora_layers = AttnProcsLayers(unet.attn_processors)
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -528,7 +522,6 @@ def main():
         else:
             raise ValueError("xformers is not available. Make sure it is installed correctly")
 
-    lora_layers = AttnProcsLayers(unet.attn_processors)
 
     # Extend unet input and output
     def expandConv2d(conv0: torch.nn.Conv2d, in_ch, out_ch):
@@ -548,7 +541,7 @@ def main():
     unet.config.in_channels = 8  # update this since it's a ConfigMixin
     unet.config.out_channels = 8
     io_layers = torch.nn.ModuleList([unet.conv_in, unet.conv_out])
-    io_layers.to(accelerator.device, dtype=weight_dtype)
+    # io_layers.to(accelerator.device, dtype=weight_dtype)
     # TODO: test whether 1. 扩张Unet 2.扩张 vae  3. 都扩张 哪个更好
 
     # Enable TF32 for faster training on Ampere GPUs,
@@ -600,6 +593,12 @@ def main():
             cache_dir=args.cache_dir,
             num_proc=64,
         )
+    elif args.local_data is not None:
+        dataset = load_from_disk(args.local_data)
+        if '+' in args.dataset_split:
+            dataset = datasets.concatenate_datasets([dataset[p] for p in args.dataset_split.split('+')])
+        else:
+            dataset =  dataset[args.dataset_split]
     else:
         data_files = {}
         if args.train_data_dir is not None:
@@ -616,12 +615,11 @@ def main():
 
     # Preprocessing the datasets.
     # We need to tokenize inputs and targets.
-    column_names = dataset["train"].column_names
+    column_names = dataset.column_names
 
     # 6. Get the column names for input/target.
-    dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
     if args.image_column is None:
-        image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
+        image_column = column_names[0]
     else:
         image_column = args.image_column
         if image_column not in column_names:
@@ -629,7 +627,7 @@ def main():
                 f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
             )
     if args.depth_column is None:
-        depth_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+        depth_column = column_names[1]
     else:
         depth_column = args.depth_column
         if depth_column not in column_names:
@@ -637,7 +635,7 @@ def main():
                 f"--depth_column' value '{args.depth_column}' needs to be one of: {', '.join(column_names)}"
             )
     if args.caption_column is None:
-        caption_column = dataset_columns[2] if dataset_columns is not None else column_names[2]
+        caption_column = column_names[2]
     else:
         caption_column = args.caption_column
         if caption_column not in column_names:
@@ -669,48 +667,37 @@ def main():
         transforms=[
             A.Resize(args.resolution, args.resolution),
             A.CenterCrop(args.resolution, args.resolution) if args.center_crop else A.RandomCrop(args.resolution, args.resolution),
-            A.Flip(d=1) if args.random_flip else A.Lambda(lambda x: x),
-            A.HueSaturationValue() if args.random_HSV else A.Lambda(lambda x: x),
+            A.HorizontalFlip() if args.random_flip else A.ToFloat(),
+            A.HueSaturationValue() if args.random_HSV else A.ToFloat(),
             A.Normalize(mean=0.5, std=0.5, max_pixel_value=255.),
             ToTensorV2(),
         ],
         additional_targets={"depth": "mask"},
     )
 
-    def load_RGBD(examples):
-        """Load RGBD image using RGBA format"""
-        from PIL import Image
-        ret = []
-        for rgb, depth in zip(examples[image_column], examples[depth_column]):
-            rgba = Image.fromarray(np.concatenate([np.array(rgb), np.array(depth)[..., :1]], axis=-1), "RGBA")
-            ret.append(rgba)
-        return ret
-
     def preprocess_train(examples):
         depth_max = 255. if args.use_disparity else args.depth_max
-        transformed = train_transforms(image=np.array(examples[image_column]), depth=np.array(examples[depth_column]))
-        examples["pixel_values"] = transformed["image"]
-        examples["depth_values"] = transformed["depth"] / depth_max * 2 - 1
+        trans = [train_transforms(image=np.array(img).astype(np.float32), depth=np.array(dep).astype(np.float32))
+                 for img, dep in zip(examples[image_column], examples[depth_column])]
+        examples["pixel_values"] = [transformed["image"] for transformed in trans]
+        examples["depth_values"] = [transformed["depth"][np.newaxis].repeat_interleave(3, 0) / depth_max * 2 - 1 for transformed in trans]
         examples["input_ids"] = tokenize_captions(examples)
-        # transformed = [train_transforms(image) for image in load_RGBD(examples)]
-        # examples["pixel_values"] = [img[:3] for img in transformed]
-        # examples["depth_values"] = [img[3:].repeat_interleave(3, 0) for img in transformed]
-        # examples["input_ids"] = tokenize_captions(examples)
         return examples
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
+            dataset = dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
         # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        train_dataset = dataset.with_transform(preprocess_train)
 
     def collate_fn(examples):
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-        depth = torch.stack([example["depth_values"] for example in examples])
-        depth = depth.to(memory_format=torch.contiguous_format).float()
-        input_ids = torch.stack([example["input_ids"] for example in examples])
-        return {"pixel_values": pixel_values, "input_ids": input_ids, "depth_values": depth}
+        with accelerator.autocast():
+            pixel_values = torch.stack([example["pixel_values"] for example in examples])
+            pixel_values = pixel_values.to(memory_format=torch.contiguous_format)
+            depth = torch.stack([example["depth_values"] for example in examples])
+            depth = depth.to(memory_format=torch.contiguous_format)
+            input_ids = torch.stack([example["input_ids"] for example in examples])
+            return {"pixel_values": pixel_values, "input_ids": input_ids, "depth_values": depth}
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -736,8 +723,8 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    io_layers, lora_layers, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        io_layers, lora_layers, optimizer, train_dataloader, lr_scheduler
+    unet, vae, text_encoder, io_layers, lora_layers, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, vae, text_encoder, io_layers, lora_layers, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -748,7 +735,7 @@ def main():
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
     # We need to initialize the trackers we use, and also store our configuration.
-    # The trackers initializes automatically on the main process.
+    # The trackers initialize automatically on the main process.
     if accelerator.is_main_process:
         accelerator.init_trackers("text2image-fine-tune", config=vars(args))
 
@@ -806,8 +793,8 @@ def main():
 
             with accelerator.accumulate(unet):
                 # Convert images to latent space, and cat the depth value
-                latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                latents_depth = vae.encode(batch["depth_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents = vae.encode(batch["pixel_values"]).latent_dist.sample()
+                latents_depth = vae.encode(batch["depth_values"]).latent_dist.sample()
                 latents = torch.cat([latents, latents_depth], dim=1)
                 latents = latents * vae.config.scaling_factor
 
@@ -821,7 +808,7 @@ def main():
 
                 bsz = latents.shape[0]
                 # Sample a random timestep for each image
-                timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (bsz,), device=latents.device)
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
                 timesteps = timesteps.long()
 
                 # Add noise to the latents according to the noise magnitude at each timestep
@@ -841,19 +828,17 @@ def main():
 
                 # Predict the noise residual and compute loss
                 model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                loss = F.mse_loss(model_pred, target, reduction="mean")
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
-                # Backpropagate
+                # Back-propagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = lora_layers.parameters()
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-                    params_to_clip = io_layers.parameters()
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    params_to_clip = [p for p in lora_layers.parameters()] + [p for p in io_layers.parameters()]
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm) # can only be called once
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -901,19 +886,20 @@ def main():
                         pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0]
                     )
 
-                for tracker in accelerator.trackers:
-                    if tracker.name == "tensorboard":
-                        np_images = np.stack([np.asarray(img) for img in images])
-                        tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                    if tracker.name == "wandb":
-                        tracker.log(
-                            {
-                                "validation": [
-                                    wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
-                                    for i, image in enumerate(images)
-                                ]
-                            }
-                        )
+                if accelerator.is_main_process:
+                    for tracker in accelerator.trackers:
+                        if tracker.name == "tensorboard":
+                            np_images = np.stack([np.asarray(img) for img in images])
+                            tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+                        if tracker.name == "wandb":
+                            tracker.log(
+                                {
+                                    "validation": [
+                                        wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
+                                        for i, image in enumerate(images)
+                                    ]
+                                }
+                            )
 
                 del pipeline
                 torch.cuda.empty_cache()
@@ -923,46 +909,31 @@ def main():
     if accelerator.is_main_process:
         unet = unet.to(torch.float32)
         unet.save_attn_procs(args.output_dir)
-        if args.push_to_hub:
-            save_model_card(
-                repo_id,
-                images=images,
-                base_model=args.pretrained_model_name_or_path,
-                dataset_name=args.dataset_name,
-                repo_folder=args.output_dir,
-            )
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
 
-    # Final inference
-    # Load previous pipeline
-    pipeline = StableDiffusionRGBDPipeline.from_pretrained(
-        args.pretrained_model_name_or_path, revision=args.revision, torch_dtype=weight_dtype,
-    )
-    unet = unet.to(weight_dtype)
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.unet.conv_in = unet.conv_in
-    pipeline.unet.conv_out = unet.conv_out
-    pipeline.unet.config.in_channels = 8  # update this since it's a ConfigMixin
-    pipeline.unet.config.out_channels = 8
-    # Save all
-    # remember manually to modify unet.config.yaml
-    pipeline.save_pretrained(os.path.join(args.output_dir, "full_model"))
+        # Final inference
+        # Load previous pipeline
+        pipeline = StableDiffusionRGBDPipeline.from_pretrained(
+            args.pretrained_model_name_or_path, revision=args.revision, torch_dtype=weight_dtype,
+        )
+        unet = unet.to(weight_dtype)
+        pipeline = pipeline.to(accelerator.device)
+        pipeline.unet.conv_in = unet.conv_in
+        pipeline.unet.conv_out = unet.conv_out
+        pipeline.unet.config.in_channels = 8  # update this since it's a ConfigMixin
+        pipeline.unet.config.out_channels = 8
+        # Save all
+        # remember manually to modify unet.config.yaml
+        pipeline.save_pretrained(os.path.join(args.output_dir, "full_model"))
 
-    # # load attention processors
-    pipeline.unet.load_attn_procs(args.output_dir)
+        # # load attention processors
+        pipeline.unet.load_attn_procs(args.output_dir)
 
-    # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-    images = []
-    for _ in range(args.num_validation_images):
-        images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
+        # run inference
+        generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+        images = []
+        for _ in range(args.num_validation_images):
+            images.append(pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0])
 
-    if accelerator.is_main_process:
         for tracker in accelerator.trackers:
             if tracker.name == "tensorboard":
                 np_images = np.stack([np.asarray(img) for img in images])
@@ -978,9 +949,6 @@ def main():
                 )
 
     accelerator.end_training()
-    logger.info(f"sleep for uploading")
-    from time import sleep
-    sleep(120)
 
 
 if __name__ == "__main__":
