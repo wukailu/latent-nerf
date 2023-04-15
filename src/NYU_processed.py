@@ -42,7 +42,7 @@ class NYUDepthV2Processed(datasets.GeneratorBasedBuilder):
             {"image": datasets.Image(),
              "disparity": datasets.Image(),
              "depth": datasets.Array2D((512, 512), dtype="float32"),
-             "text": datasets.features.Sequence(feature="string", length=4)}
+             "text": datasets.features.Sequence(feature=datasets.Value("string"))}
         )
         return datasets.DatasetInfo(
             description=_DESCRIPTION,
