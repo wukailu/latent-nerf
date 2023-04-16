@@ -299,6 +299,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--alpha_depth",
+        type=float,
+        default=0.5,
+        help=(
+            'The importance of l2 loss at depth. (l1 gives a sharper edge). In RGBDD it is 0.8.'
+        ),
+    )
+    parser.add_argument(
         "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
     )
     parser.add_argument(
@@ -340,17 +348,6 @@ def parse_args():
         help=(
             "[TensorBoard](https://www.tensorflow.org/tensorboard) log directory. Will default to"
             " *output_dir/runs/**CURRENT_DATETIME_HOSTNAME***."
-        ),
-    )
-    parser.add_argument(
-        "--mixed_precision",
-        type=str,
-        default=None,
-        choices=["no", "fp16", "bf16"],
-        help=(
-            "Whether to use mixed precision. Choose between fp16 and bf16 (bfloat16). Bf16 requires PyTorch >="
-            " 1.10.and an Nvidia Ampere GPU.  Default to the value of accelerate config of the current system or the"
-            " flag passed with the `accelerate.launch` command. Use this argument to override the accelerate config."
         ),
     )
     parser.add_argument(
@@ -416,7 +413,6 @@ def main():
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         logging_dir=logging_dir,
         project_config=accelerator_project_config,
@@ -828,7 +824,10 @@ def main():
 
                 # Predict the noise residual and compute loss
                 model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
-                loss = F.mse_loss(model_pred, target, reduction="mean")
+
+                loss_rgb = F.mse_loss(model_pred[:, :4], target[:, :4], reduction="mean")
+                loss_depth = F.mse_loss(model_pred[:, 4:], target[:, 4:], reduction="mean")
+                loss = loss_rgb * (1 - args.alpha_depth) + loss_depth * args.alpha_depth
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
