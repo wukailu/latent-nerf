@@ -737,7 +737,7 @@ def main():
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initialize automatically on the main process.
     if accelerator.is_main_process:
-        accelerator.init_trackers("text2image-fine-tune", config=vars(args))
+        accelerator.init_trackers("text2rgbd-fine-tune", config=vars(args))
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -873,15 +873,14 @@ def main():
                     args.pretrained_model_name_or_path,
                     unet=accelerator.unwrap_model(unet),
                     revision=args.revision,
-                    torch_dtype=weight_dtype,
                 )
-                pipeline = pipeline.to(accelerator.device)
+                pipeline = pipeline.to(accelerator.device, torch_dtype=weight_dtype)
                 pipeline.set_progress_bar_config(disable=True)
 
                 # run inference
                 generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
                 images = []
-                for _ in range(args.num_validation_images):
+                for _ in range(args.num_validation_images):  # TODO: fix bug here, type not correct
                     images.append(
                         pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0]
                     )
@@ -907,26 +906,26 @@ def main():
     # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        unet = unet.to(torch.float32)
+        unet = accelerator.unwrap_model(unet).to(torch.float32)
         unet.save_attn_procs(args.output_dir)
 
         # Final inference
         # Load previous pipeline
         pipeline = StableDiffusionRGBDPipeline.from_pretrained(
-            args.pretrained_model_name_or_path, revision=args.revision, torch_dtype=weight_dtype,
+            args.pretrained_model_name_or_path, revision=args.revision
         )
-        unet = unet.to(weight_dtype)
-        pipeline = pipeline.to(accelerator.device)
         pipeline.unet.conv_in = unet.conv_in
         pipeline.unet.conv_out = unet.conv_out
         pipeline.unet.config.in_channels = 8  # update this since it's a ConfigMixin
         pipeline.unet.config.out_channels = 8
+        pipeline = pipeline.to(accelerator.device, torch_dtype=weight_dtype)
         # Save all
         # remember manually to modify unet.config.yaml
         pipeline.save_pretrained(os.path.join(args.output_dir, "full_model"))
 
         # # load attention processors
         pipeline.unet.load_attn_procs(args.output_dir)
+        pipeline = pipeline.to(accelerator.device, torch_dtype=weight_dtype)
 
         # run inference
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
@@ -953,3 +952,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

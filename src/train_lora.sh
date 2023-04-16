@@ -12,7 +12,7 @@ WANDB_MODE=offline accelerate launch --config_file $CONFIG train_text_to_image_l
   --local_data=$DATA_DIR --dataset_split=$DATA_SPLIT --caption_column="text" \
   --resolution=512 --random_flip --lora_rank=4\
   --train_batch_size=1 \
-  --num_train_epochs=3 --checkpointing_steps=10000 \
+  --num_train_epochs=3 --checkpointing_steps=10000 --max_train_steps=10\
   --conv_learning_rate=1e-03 --learning_rate=1e-04 --lr_scheduler="constant" --lr_warmup_steps=0 \
   --seed=42 \
   --output_dir=$OUTPUT_DIR \
