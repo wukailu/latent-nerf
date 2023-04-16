@@ -12,3 +12,7 @@ matplotlib
 pyrallis
 loguru
 tqdm
+albumentations
+datasets
+wandb
+xformers
