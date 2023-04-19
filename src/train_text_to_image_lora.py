@@ -753,6 +753,7 @@ def main():
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     global_step = 0
     first_epoch = 0
+    resume_step = 0
 
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
@@ -780,7 +781,7 @@ def main():
             resume_step = resume_global_step % (num_update_steps_per_epoch * args.gradient_accumulation_steps)
 
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(0, args.max_train_steps), disable=not accelerator.is_local_main_process)
+    progress_bar = tqdm(range(global_step-resume_step, args.max_train_steps), disable=not accelerator.is_local_main_process)
     progress_bar.set_description("Steps")
 
     for epoch in range(first_epoch, args.num_train_epochs):
@@ -790,7 +791,7 @@ def main():
         for step, batch in enumerate(train_dataloader):
             # Skip steps until we reach the resumed step
             if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
-                if step % args.gradient_accumulation_steps == 0:
+                if step % args.gradient_accumulation_steps == 0 and accelerator.is_main_process:
                     progress_bar.update(1)
                 continue
 
@@ -860,10 +861,10 @@ def main():
                     save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
                     logger.info(f"Saved state to {save_path}")
-                    save_path_last = os.path.join(args.output_dir, f"checkpoint-{global_step - args.checkpointing_steps}")
-                    if os.path.exists(save_path_last):
+                    save_path_last_2 = os.path.join(args.output_dir, f"checkpoint-{global_step - args.checkpointing_steps * 2}")
+                    if os.path.exists(save_path_last_2):
                         import shutil
-                        shutil.rmtree(save_path_last)
+                        shutil.rmtree(save_path_last_2)
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
