@@ -46,3 +46,14 @@ class MidasDetector:
             image_depth = rearrange(image_depth, 'h w c -> 1 c h w')
             depth = self.model(image_depth)[0]
             return depth
+
+    def disp_with_grad(self, inputs):
+        """
+        Args:
+            inputs: torch float tensor in shape of [1, c, h, w]
+
+        Returns:
+
+        """
+        assert isinstance(inputs, torch.Tensor) and -1 <= inputs.min() and inputs.max() <= 1
+        return self.model.forward_with_grad(inputs)

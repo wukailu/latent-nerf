@@ -167,3 +167,6 @@ class MiDaSInference(nn.Module):
             prediction = self.model(x)
         return prediction
 
+    def forward_with_grad(self, x):
+        return self.model(x)
+

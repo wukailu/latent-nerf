@@ -261,6 +261,12 @@ def parse_args():
         help="Total number of training steps to perform.  If provided, overrides num_train_epochs.",
     )
     parser.add_argument(
+        "--max_step_per_epoch",
+        type=int,
+        default=int(1e9),
+        help="For debug, set the number of steps in one epoch",
+    )
+    parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
         default=1,
@@ -780,6 +786,7 @@ def main():
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
+        print("starting epoch: ", epoch)
         for step, batch in enumerate(train_dataloader):
             # Skip steps until we reach the resumed step
             if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
@@ -837,7 +844,7 @@ def main():
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = [p for p in lora_layers.parameters()] + [p for p in io_layers.parameters()]
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm) # can only be called once
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)  # can only be called once
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -860,47 +867,52 @@ def main():
 
             if global_step >= args.max_train_steps:
                 break
+            if step >= args.max_step_per_epoch:
+                break
 
         if accelerator.is_main_process:
             if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
-                logger.info(
-                    f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-                    f" {args.validation_prompt}."
-                )
-                # create pipeline
-                pipeline = StableDiffusionRGBDPipeline.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    unet=accelerator.unwrap_model(unet),
-                    revision=args.revision,
-                )
-                pipeline = pipeline.to(accelerator.device, torch_dtype=weight_dtype)
-                pipeline.set_progress_bar_config(disable=True)
-
-                # run inference
-                generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-                images = []
-                for _ in range(args.num_validation_images):  # TODO: fix bug here, type not correct
-                    images.append(
-                        pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0]
+                with torch.no_grad():
+                    from copy import deepcopy
+                    unet_copy = deepcopy(accelerator.unwrap_model(unet))
+                    logger.info(
+                        f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
+                        f" {args.validation_prompt}."
                     )
+                    # create pipeline
+                    pipeline = StableDiffusionRGBDPipeline.from_pretrained(
+                        args.pretrained_model_name_or_path,
+                        unet=unet_copy,
+                        revision=args.revision,
+                    )
+                    pipeline = pipeline.to(accelerator.device, torch_dtype=weight_dtype)
+                    pipeline.set_progress_bar_config(disable=True)
 
-                if accelerator.is_main_process:
-                    for tracker in accelerator.trackers:
-                        if tracker.name == "tensorboard":
-                            np_images = np.stack([np.asarray(img) for img in images])
-                            tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                        if tracker.name == "wandb":
-                            tracker.log(
-                                {
-                                    "validation": [
-                                        wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
-                                        for i, image in enumerate(images)
-                                    ]
-                                }
-                            )
+                    # run inference
+                    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+                    images = []
+                    for _ in range(args.num_validation_images):
+                        images.append(
+                            pipeline(args.validation_prompt, num_inference_steps=30, generator=generator).images[0]
+                        )
 
-                del pipeline
-                torch.cuda.empty_cache()
+                    if accelerator.is_main_process:
+                        for tracker in accelerator.trackers:
+                            if tracker.name == "tensorboard":
+                                np_images = np.stack([np.asarray(img) for img in images])
+                                tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+                            if tracker.name == "wandb":
+                                tracker.log(
+                                    {
+                                        "validation": [
+                                            wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
+                                            for i, image in enumerate(images)
+                                        ]
+                                    }
+                                )
+
+                    del pipeline, unet_copy
+                    torch.cuda.empty_cache()
 
     # Save the lora layers
     accelerator.wait_for_everyone()

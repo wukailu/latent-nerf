@@ -1,13 +1,14 @@
-OUTPUT_DIR="sd-rgbd-model-lora-debug"
+OUTPUT_DIR="sd-rgbd-model-lora"
 ACC_CONFIG="default_config"
 CONFIG="/home/wukailu/.cache/huggingface/accelerate/$ACC_CONFIG.yaml"
 MODEL_NAME="/home/wukailu/.cache/huggingface/hub/models--runwayml--stable-diffusion-v1-5/snapshots/39593d5650112b4cc580433f6b0435385882d819"
 DATA_DIR='/data/NYU_processed_disk/'
-DATA_SPLIT="test"
+DATA_SPLIT="train"
 HF_DATASETS_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 
-WANDB_MODE=offline accelerate launch --config_file $CONFIG --num_processes=1 train_text_to_image_lora.py \
+#WANDB_MODE=offline
+accelerate launch --config_file $CONFIG train_text_to_image_lora.py \
   --pretrained_model_name_or_path=$MODEL_NAME\
   --local_data=$DATA_DIR --dataset_split=$DATA_SPLIT --caption_column="text" \
   --resolution=512 --random_flip --lora_rank=4\
@@ -17,6 +18,4 @@ WANDB_MODE=offline accelerate launch --config_file $CONFIG --num_processes=1 tra
   --seed=42 \
   --output_dir=$OUTPUT_DIR \
   --validation_prompt="bedroom made of cakes" --report_to="wandb" --enable_xformers_memory_efficient_attention\
-  --max_step_per_epoch=3 --num_validation_images=1
-#  --resume_from_checkpoint latest
-
+  --resume_from_checkpoint latest
