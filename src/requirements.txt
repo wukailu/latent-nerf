@@ -14,5 +14,4 @@ loguru
 tqdm
 albumentations
 datasets
-wandb
-xformers
+xformers>=0.0.18
