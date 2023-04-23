@@ -1,0 +1,4 @@
+{"filename": "wall1.png", "description": "floor", "weight": 1.0}
+{"filename": "wall2.png", "description": "ceiling", "weight": 1.0}
+{"filename": "wall3.png", "description": "wall", "weight": 1.0}
+{"filename": "wall4.png", "description": "wall", "weight": 1.0}
